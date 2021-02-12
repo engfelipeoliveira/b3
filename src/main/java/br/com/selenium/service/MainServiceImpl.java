@@ -2,17 +2,17 @@ package br.com.selenium.service;
 
 import static org.slf4j.LoggerFactory.getLogger;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.lang3.StringUtils;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
-import org.openqa.selenium.By.ByClassName;
-import org.openqa.selenium.By.ByName;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.slf4j.Logger;
@@ -49,66 +49,74 @@ public class MainServiceImpl implements MainService {
 		return driver;
 	}
 	
-	private Optional<SaldoEstrangeiro> parseRowToEntity(WebElement row, List<WebElement> cols)  {
-		String diaHora = StringUtils.trimToEmpty(row.getAttribute("data-event-datetime"));
-		if(StringUtils.isNotBlank(diaHora)) {
-			String dia = StringUtils.trimToEmpty(diaHora.substring(0, 10));
-			String hora = StringUtils.trimToEmpty(diaHora.substring(11, 16));
-			String pais = StringUtils.trimToEmpty(cols.get(1).getText());
-			String forca = StringUtils.replace(StringUtils.trimToEmpty(cols.get(2).getAttribute("data-img_key")), "bull", "");
-			String evento = StringUtils.trimToEmpty(cols.get(3).getText());
-			String isDiscurso = cols.get(3).findElements(ByClassName.className("audioIconNew")).isEmpty() ? "False" : "True";
-			String atual = StringUtils.trimToEmpty(cols.get(4).getText());
-			String projecao = StringUtils.trimToEmpty(cols.get(5).getText());
-			String previo = StringUtils.trimToEmpty(cols.get(6).getText());
-			
+	private Optional<SaldoEstrangeiro> parseRowToEntity(WebElement row, List<WebElement> cols, LocalDate date)  {
+		String tipo = StringUtils.trimToEmpty(cols.get(0).getText());
+		Integer codigo = 0;
+		BigDecimal compra = new BigDecimal(StringUtils.trimToEmpty(cols.get(1).getText()));
+		BigDecimal venda = new BigDecimal(StringUtils.trimToEmpty(cols.get(3).getText()));
+		
+		if("Pessoa Jurídica Financeira".equalsIgnoreCase(tipo)){
+			codigo = 1;
+		}else if("Bancos".equalsIgnoreCase(tipo)){
+			codigo = 2;
+		}else if("Investidores Não Residentes".equalsIgnoreCase(tipo)){
+			codigo = 3;
+		}
+		
+		if(codigo > 0) {
 			return Optional.of(SaldoEstrangeiro.builder()
-					.dia(dia)
-					.hora(hora)
-					.pais(pais)
-					.forca(forca)
-					.isDiscurso(isDiscurso)
-					.evento(evento)
-					.atual(atual)
-					.projecao(projecao)
-					.previo(previo)
-					.build());			
+					.data(date)
+					.codigo(codigo)
+					.compra(compra)
+					.venda(venda)
+					.tipo(tipo)
+					.build());	
 		}else {
 			return Optional.empty();
 		}
-
+					
 	}
 
 	@Override
 	public void execute() throws Exception {
 		WebDriver driver = this.setupSelenium();
 		
-		while(true) {
-			WebElement table = driver.findElement(By.id("economicCalendarData"));
-			WebElement body = table.findElement(By.tagName("tbody"));
-			List<WebElement> rows = body.findElements(By.tagName("tr"));
-			List<ChecadorNoticia> checadorNoticias = new ArrayList<ChecadorNoticia>();
+		LocalDate yesterday = LocalDate.now().minusDays(1);
+		Thread.sleep(2000);
+		driver.findElement(By.id("dData1")).sendKeys(yesterday.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")));
+		Thread.sleep(2000);
+		driver.findElement(By.name("frmBD")).findElement(By.tagName("button")).click();
+		Thread.sleep(2000);
+		
+		WebElement table = driver.findElements(By.className("responsive")).stream().filter(
+				tables -> "MERCADO FUTURO DE DÓLAR".equalsIgnoreCase(tables.findElement(By.tagName("caption")).getText())).findFirst().get();
+		
+		
+		WebElement body = table.findElement(By.tagName("tbody"));
+		List<WebElement> rows = body.findElements(By.tagName("tr"));
+		List<SaldoEstrangeiro> saldoEstrangeiros = new ArrayList<SaldoEstrangeiro>();
+		
+		rows.stream().forEach(row -> {
+			List<WebElement> cols = row.findElements(By.tagName("td"));
 			
-			rows.stream().forEach(row -> {
-				List<WebElement> cols = row.findElements(By.tagName("td"));
+			if(parseRowToEntity(row, cols, yesterday).isPresent()) {
+				SaldoEstrangeiro newSaldoEstrangeiro = parseRowToEntity(row, cols, yesterday).get();
+				SaldoEstrangeiro oldSaldoEstrangeiro = this.saldoEstrangeiroService.getByCodigoAndData(newSaldoEstrangeiro.getCodigo(), newSaldoEstrangeiro.getData());
 				
-				if(parseRowToEntity(row, cols).isPresent()) {
-					ChecadorNoticia newChecadorNoticia = parseRowToEntity(row, cols).get();
-					ChecadorNoticia oldChecadorNoticia = this.checadorNoticiaService.getByDiaHoraPaisEvento(newChecadorNoticia.getDia(), newChecadorNoticia.getHora(), newChecadorNoticia.getPais(), newChecadorNoticia.getEvento());
-					
-					if(oldChecadorNoticia != null) {
-						newChecadorNoticia.setId(oldChecadorNoticia.getId());
-					}
-					
-					checadorNoticias.add(newChecadorNoticia);
+				if(oldSaldoEstrangeiro != null) {
+					newSaldoEstrangeiro.setId(oldSaldoEstrangeiro.getId());
 				}
 				
-			});
-			LOG.info("Salvando noticias no BD");
-			this.checadorNoticiaService.save(checadorNoticias);
-			LOG.info(checadorNoticias.toString());
-			Thread.sleep(WAIT);
-		}		
+				saldoEstrangeiros.add(newSaldoEstrangeiro);
+			}
+			
+		});
+		LOG.info("Salvando saldo estrangeiro no BD");
+		this.saldoEstrangeiroService.save(saldoEstrangeiros);
+		LOG.info(saldoEstrangeiros.toString());
+		
+		driver.close();
+		driver.quit();
 		
 	}
 	
